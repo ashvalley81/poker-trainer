@@ -41,11 +41,11 @@
     color: var(--sub);
   }
   .score-bar b { color: var(--text); font-size: 17px; display: block; text-align: center; }
-  .tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 12px; }
   .tabs button {
     flex: 1;
-    padding: 12px 4px;
-    font-size: 14px;
+    padding: 12px 2px;
+    font-size: 13px;
     font-weight: 600;
     border: 1px solid var(--border);
     border-radius: 10px;
@@ -57,7 +57,7 @@
     background: var(--card);
     border: 1px solid var(--border);
     border-radius: 12px;
-    padding: 20px 16px;
+    padding: 16px;
     text-align: center;
     margin-bottom: 12px;
   }
@@ -66,9 +66,33 @@
   .spot .value { font-size: 26px; font-weight: 700; margin-top: 2px; }
   .winrate { margin-top: 14px; font-size: 15px; color: var(--sub); }
   .winrate b { font-size: 24px; color: var(--blue); }
+  .street-badge {
+    display: inline-block;
+    background: var(--blue);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 700;
+    border-radius: 6px;
+    padding: 3px 10px;
+    margin-bottom: 8px;
+  }
+  .cards-label { font-size: 12px; color: var(--sub); margin-top: 6px; }
+  .cards { display: flex; gap: 6px; justify-content: center; margin: 6px 0 4px; }
+  .cardc {
+    background: #fff;
+    color: #1a1a1a;
+    border-radius: 8px;
+    padding: 10px 4px;
+    font-size: 19px;
+    font-weight: 700;
+    min-width: 46px;
+    text-align: center;
+  }
+  .cardc.red { color: #d23b3b; }
   .question { text-align: center; font-size: 15px; margin-bottom: 10px; color: var(--sub); }
   .choices { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
   .choices.two { grid-template-columns: 1fr 1fr; }
+  .choices.four { grid-template-columns: 1fr 1fr; }
   .choices button {
     padding: 18px 4px;
     font-size: 18px;
@@ -93,6 +117,7 @@
   .feedback.ok { background: rgba(46,164,79,.15); border: 1px solid var(--green); }
   .feedback.ng { background: rgba(217,83,79,.15); border: 1px solid var(--red); }
   .feedback .big { font-size: 20px; font-weight: 700; }
+  .feedback .note { font-size: 12px; color: var(--sub); }
   .next-hint { text-align: center; color: var(--sub); font-size: 12px; margin-top: 10px; }
 </style>
 </head>
@@ -109,16 +134,24 @@
   <div class="tabs">
     <button id="tab-rate" class="active">必要勝率</button>
     <button id="tab-cf">CALL/FOLD</button>
+    <button id="tab-outs">勝率(アウツ)</button>
   </div>
 
   <div class="spot">
-    <div class="row">
+    <div class="row" id="pot-row">
       <div><div class="label">ポット</div><div class="value" id="pot">-</div></div>
       <div><div class="label">相手ベット</div><div class="value" id="bet">-</div></div>
       <div><div class="label">コール額</div><div class="value" id="call">-</div></div>
     </div>
     <div class="winrate" id="winrate-box" style="display:none">
       自分の勝率 <b id="winrate">-</b>%
+    </div>
+    <div id="card-area" style="display:none">
+      <div class="street-badge" id="street">フロップ</div>
+      <div class="cards-label">あなたの手札</div>
+      <div class="cards" id="hand-cards"></div>
+      <div class="cards-label">ボード</div>
+      <div class="cards" id="board-cards"></div>
     </div>
   </div>
 
@@ -131,11 +164,31 @@
 <script>
 const BET_SIZES = [0.33, 0.5, 0.66, 0.75, 1.0, 1.5];
 const POTS = [40, 60, 80, 100, 120, 150, 200, 300];
-// 各ベットサイズに対応する必要勝率(%)
 const RATE_CHOICES = [20, 25, 28.5, 30, 33.3, 37.5];
 
-let mode = "rate";          // "rate" or "cf"
-let spot = null;            // 今の問題
+// アウツクイズの局面集（turn はアウツを変えないブリックカード）
+const OUTS_SET = [2, 4, 6, 8, 9, 12, 15];
+const SCENARIOS = [
+  { name: "フラッシュドロー", hand: ["A♥", "7♥"], flop: ["K♥", "9♥", "2♣"], turn: "4♣",
+    outs: 9, expl: "ハートはあと9枚（13−4）" },
+  { name: "オープンエンド", hand: ["9♠", "8♦"], flop: ["7♣", "6♥", "2♠"], turn: "K♣",
+    outs: 8, expl: "5か10、どちらでもストレート（4枚+4枚）" },
+  { name: "ガットショット", hand: ["J♠", "10♦"], flop: ["8♣", "7♥", "2♠"], turn: "3♦",
+    outs: 4, expl: "9（4枚）だけでストレート完成" },
+  { name: "オーバーカード2枚", hand: ["A♠", "K♦"], flop: ["9♣", "6♥", "2♠"], turn: "3♦",
+    outs: 6, expl: "AかKを引けばトップペア（3枚+3枚）" },
+  { name: "フラドロ+ガットショット", hand: ["J♥", "10♥"], flop: ["8♥", "7♣", "2♥"], turn: "3♣",
+    outs: 12, expl: "ハート9枚 + 9が4枚 − 重複の9♥ = 12枚" },
+  { name: "コンボドロー", hand: ["9♥", "8♥"], flop: ["7♥", "6♣", "2♥"], turn: "K♦",
+    outs: 15, expl: "ハート9枚 + 5と10で8枚 − 重複2枚 = 15枚" },
+  { name: "ポケットペア（セット狙い)", hand: ["5♠", "5♦"], flop: ["A♣", "K♥", "9♠"], turn: "7♥",
+    outs: 2, expl: "残りの5は2枚だけ" },
+];
+// アウツが多い時、×4ルールは実際よりやや高く出る
+const FLOP_ACTUAL = { 12: 45, 15: 54 };
+
+let mode = "rate";          // "rate" / "cf" / "outs"
+let spot = null;
 let answered = false;
 let correct = 0, total = 0, streak = 0;
 let best = Number(localStorage.getItem("pokerBestStreak") || 0);
@@ -149,60 +202,102 @@ function calcEV(pot, bet, call, winPct) {
   const w = winPct / 100;
   return w * (pot + bet) - (1 - w) * call;
 }
+function pick(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
 
 function newSpot() {
-  const pot = POTS[Math.floor(Math.random() * POTS.length)];
-  const size = BET_SIZES[Math.floor(Math.random() * BET_SIZES.length)];
-  const bet = Math.round(pot * size);
-  const call = bet;
-  const required = requiredRate(pot, bet, call);
-  let winPct = null;
-  if (mode === "cf") {
-    winPct = Math.round(required + (Math.random() * 24 - 12));
-    winPct = Math.max(5, Math.min(95, winPct));
-  }
-  spot = { pot, bet, call, required, winPct };
   answered = false;
+  if (mode === "outs") {
+    spot = { sc: pick(SCENARIOS), street: pick(["flop", "turn"]), stage: 1 };
+  } else {
+    const pot = pick(POTS);
+    const size = pick(BET_SIZES);
+    const bet = Math.round(pot * size);
+    const call = bet;
+    const required = requiredRate(pot, bet, call);
+    let winPct = null;
+    if (mode === "cf") {
+      winPct = Math.round(required + (Math.random() * 24 - 12));
+      winPct = Math.max(5, Math.min(95, winPct));
+    }
+    spot = { pot, bet, call, required, winPct };
+  }
   render();
 }
 
+function cardHTML(c) {
+  const suit = c.slice(-1);
+  const red = (suit === "♥" || suit === "♦") ? " red" : "";
+  return `<div class="cardc${red}">${c}</div>`;
+}
+
+function makeButton(label, onTap) {
+  const b = document.createElement("button");
+  b.textContent = label;
+  b.onclick = onTap;
+  return b;
+}
+
 function render() {
-  $("pot").textContent = spot.pot;
-  $("bet").textContent = spot.bet;
-  $("call").textContent = spot.call;
   $("feedback").className = "feedback";
   $("feedback").innerHTML = "";
   $("next-hint").textContent = "";
-
   const choices = $("choices");
   choices.innerHTML = "";
 
+  const isOuts = mode === "outs";
+  $("pot-row").style.display = isOuts ? "none" : "flex";
+  $("card-area").style.display = isOuts ? "block" : "none";
+  $("winrate-box").style.display = (mode === "cf") ? "block" : "none";
+
   if (mode === "rate") {
-    $("winrate-box").style.display = "none";
+    $("pot").textContent = spot.pot;
+    $("bet").textContent = spot.bet;
+    $("call").textContent = spot.call;
     $("question").textContent = "必要勝率はどれ?";
     choices.className = "choices";
-    RATE_CHOICES.forEach(r => {
-      const b = document.createElement("button");
-      b.textContent = r + "%";
-      b.onclick = () => answerRate(r);
-      choices.appendChild(b);
-    });
-  } else {
-    $("winrate-box").style.display = "block";
+    RATE_CHOICES.forEach(r => choices.appendChild(makeButton(r + "%", () => answerRate(r))));
+
+  } else if (mode === "cf") {
+    $("pot").textContent = spot.pot;
+    $("bet").textContent = spot.bet;
+    $("call").textContent = spot.call;
     $("winrate").textContent = spot.winPct;
     $("question").textContent = "コールすべき?";
     choices.className = "choices two";
-    const c = document.createElement("button");
-    c.textContent = "CALL";
+    const c = makeButton("CALL", () => answerCF(true));
     c.className = "call";
-    c.onclick = () => answerCF(true);
-    const f = document.createElement("button");
-    f.textContent = "FOLD";
+    const f = makeButton("FOLD", () => answerCF(false));
     f.className = "fold";
-    f.onclick = () => answerCF(false);
     choices.appendChild(c);
     choices.appendChild(f);
+
+  } else {
+    const sc = spot.sc;
+    $("street").textContent = spot.street === "flop" ? "フロップ" : "ターン";
+    $("hand-cards").innerHTML = sc.hand.map(cardHTML).join("");
+    const board = spot.street === "flop" ? sc.flop : sc.flop.concat([sc.turn]);
+    $("board-cards").innerHTML = board.map(cardHTML).join("");
+
+    if (spot.stage === 1) {
+      $("question").textContent = "アウツ（勝ちにつながるカード）は何枚?";
+      choices.className = "choices";
+      OUTS_SET.forEach(o => choices.appendChild(makeButton(o + "枚", () => answerOuts(o))));
+    } else {
+      const left = spot.street === "flop" ? "リバーまで（あと2枚）見る場合" : "リバー1枚で";
+      $("question").textContent = left + "、勝率は約何%?";
+      choices.className = "choices four";
+      rateOptions().forEach(r => choices.appendChild(makeButton("約" + r + "%", () => answerOutsRate(r))));
+    }
   }
+}
+
+function rateOptions() {
+  const mult = spot.street === "flop" ? 4 : 2;
+  const i = OUTS_SET.indexOf(spot.sc.outs);
+  const start = Math.min(Math.max(0, i - 1), OUTS_SET.length - 4);
+  return OUTS_SET.slice(start, start + 4).map(o => o * mult);
 }
 
 function updateScore(isCorrect) {
@@ -222,11 +317,11 @@ function updateScore(isCorrect) {
   $("best").textContent = best;
 }
 
-function showFeedback(isCorrect, html) {
+function showFeedback(isCorrect, html, hint) {
   const fb = $("feedback");
   fb.className = "feedback " + (isCorrect ? "ok" : "ng");
   fb.innerHTML = html;
-  $("next-hint").textContent = "タップで次の問題へ";
+  $("next-hint").textContent = hint || "タップで次の問題へ";
   answered = true;
 }
 
@@ -255,25 +350,56 @@ function answerCF(calledIt) {
     `EV ${ev >= 0 ? "+" : ""}${ev.toFixed(1)}`);
 }
 
-// 回答後は画面のどこをタップしても次へ
-document.body.addEventListener("click", () => {
-  if (answered) newSpot();
+function answerOuts(guess) {
+  if (answered) return;
+  const sc = spot.sc;
+  const isCorrect = guess === sc.outs;
+  updateScore(isCorrect);
+  const mark = isCorrect ? "○ 正解!" : "× ざんねん";
+  showFeedback(isCorrect,
+    `<div class="big">${mark} アウツは ${sc.outs}枚</div>${sc.name}: ${sc.expl}`,
+    "タップして勝率の問題へ");
+}
+
+function answerOutsRate(guess) {
+  if (answered) return;
+  const mult = spot.street === "flop" ? 4 : 2;
+  const ans = spot.sc.outs * mult;
+  const isCorrect = guess === ans;
+  updateScore(isCorrect);
+  const mark = isCorrect ? "○ 正解!" : "× ざんねん";
+  let note = "";
+  if (spot.street === "flop" && FLOP_ACTUAL[spot.sc.outs]) {
+    note = `<br><span class="note">※アウツが多い時の×4は少し高めに出ます（正確には約${FLOP_ACTUAL[spot.sc.outs]}%）</span>`;
+  }
+  showFeedback(isCorrect,
+    `<div class="big">${mark} 約${ans}%</div>` +
+    `アウツ ${spot.sc.outs}枚 × ${mult} = ${ans}%${note}`);
+}
+
+// 回答後は画面タップで進む（ボタン上のタップは除く）
+document.body.addEventListener("click", (e) => {
+  if (e.target.closest("button")) return;
+  if (!answered) return;
+  if (mode === "outs" && spot.stage === 1) {
+    spot.stage = 2;
+    answered = false;
+    render();
+  } else {
+    newSpot();
+  }
 });
 
-$("tab-rate").onclick = (e) => {
-  e.stopPropagation();
-  mode = "rate";
-  $("tab-rate").classList.add("active");
-  $("tab-cf").classList.remove("active");
+function setMode(m) {
+  mode = m;
+  ["rate", "cf", "outs"].forEach(t => {
+    $("tab-" + t).classList.toggle("active", t === m);
+  });
   newSpot();
-};
-$("tab-cf").onclick = (e) => {
-  e.stopPropagation();
-  mode = "cf";
-  $("tab-cf").classList.add("active");
-  $("tab-rate").classList.remove("active");
-  newSpot();
-};
+}
+$("tab-rate").onclick = () => setMode("rate");
+$("tab-cf").onclick = () => setMode("cf");
+$("tab-outs").onclick = () => setMode("outs");
 
 $("best").textContent = best;
 newSpot();
