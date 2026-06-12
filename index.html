@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Poker EV Trainer</title>
+<style>
+  :root {
+    --bg: #0f1419;
+    --card: #1a2129;
+    --text: #e8eaed;
+    --sub: #8b949e;
+    --green: #2ea44f;
+    --red: #d9534f;
+    --blue: #58a6ff;
+    --border: #2d3640;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Hiragino Sans", sans-serif;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 16px;
+  }
+  .app { width: 100%; max-width: 420px; }
+  h1 { font-size: 18px; text-align: center; padding: 8px 0 4px; }
+  .score-bar {
+    display: flex;
+    justify-content: space-around;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 10px;
+    margin: 12px 0;
+    font-size: 13px;
+    color: var(--sub);
+  }
+  .score-bar b { color: var(--text); font-size: 17px; display: block; text-align: center; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+  .tabs button {
+    flex: 1;
+    padding: 12px 4px;
+    font-size: 14px;
+    font-weight: 600;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--card);
+    color: var(--sub);
+  }
+  .tabs button.active { background: var(--blue); color: #fff; border-color: var(--blue); }
+  .spot {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 16px;
+    text-align: center;
+    margin-bottom: 12px;
+  }
+  .spot .row { display: flex; justify-content: space-around; }
+  .spot .label { font-size: 12px; color: var(--sub); }
+  .spot .value { font-size: 26px; font-weight: 700; margin-top: 2px; }
+  .winrate { margin-top: 14px; font-size: 15px; color: var(--sub); }
+  .winrate b { font-size: 24px; color: var(--blue); }
+  .question { text-align: center; font-size: 15px; margin-bottom: 10px; color: var(--sub); }
+  .choices { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+  .choices.two { grid-template-columns: 1fr 1fr; }
+  .choices button {
+    padding: 18px 4px;
+    font-size: 18px;
+    font-weight: 700;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--card);
+    color: var(--text);
+  }
+  .choices button:active { background: var(--border); }
+  .choices button.call { background: var(--green); border-color: var(--green); color: #fff; font-size: 22px; }
+  .choices button.fold { background: var(--red); border-color: var(--red); color: #fff; font-size: 22px; }
+  .feedback {
+    min-height: 76px;
+    margin-top: 14px;
+    text-align: center;
+    border-radius: 12px;
+    padding: 12px;
+    font-size: 15px;
+    line-height: 1.6;
+  }
+  .feedback.ok { background: rgba(46,164,79,.15); border: 1px solid var(--green); }
+  .feedback.ng { background: rgba(217,83,79,.15); border: 1px solid var(--red); }
+  .feedback .big { font-size: 20px; font-weight: 700; }
+  .next-hint { text-align: center; color: var(--sub); font-size: 12px; margin-top: 10px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <h1>♠ Poker EV Trainer</h1>
+
+  <div class="score-bar">
+    <div>正解<b id="score">0/0</b></div>
+    <div>連続<b id="streak">0</b></div>
+    <div>最高連続<b id="best">0</b></div>
+  </div>
+
+  <div class="tabs">
+    <button id="tab-rate" class="active">必要勝率</button>
+    <button id="tab-cf">CALL/FOLD</button>
+  </div>
+
+  <div class="spot">
+    <div class="row">
+      <div><div class="label">ポット</div><div class="value" id="pot">-</div></div>
+      <div><div class="label">相手ベット</div><div class="value" id="bet">-</div></div>
+      <div><div class="label">コール額</div><div class="value" id="call">-</div></div>
+    </div>
+    <div class="winrate" id="winrate-box" style="display:none">
+      自分の勝率 <b id="winrate">-</b>%
+    </div>
+  </div>
+
+  <div class="question" id="question">必要勝率はどれ?</div>
+  <div class="choices" id="choices"></div>
+  <div class="feedback" id="feedback"></div>
+  <div class="next-hint" id="next-hint"></div>
+</div>
+
+<script>
+const BET_SIZES = [0.33, 0.5, 0.66, 0.75, 1.0, 1.5];
+const POTS = [40, 60, 80, 100, 120, 150, 200, 300];
+// 各ベットサイズに対応する必要勝率(%)
+const RATE_CHOICES = [20, 25, 28.5, 30, 33.3, 37.5];
+
+let mode = "rate";          // "rate" or "cf"
+let spot = null;            // 今の問題
+let answered = false;
+let correct = 0, total = 0, streak = 0;
+let best = Number(localStorage.getItem("pokerBestStreak") || 0);
+
+const $ = id => document.getElementById(id);
+
+function requiredRate(pot, bet, call) {
+  return call / (pot + bet + call) * 100;
+}
+function calcEV(pot, bet, call, winPct) {
+  const w = winPct / 100;
+  return w * (pot + bet) - (1 - w) * call;
+}
+
+function newSpot() {
+  const pot = POTS[Math.floor(Math.random() * POTS.length)];
+  const size = BET_SIZES[Math.floor(Math.random() * BET_SIZES.length)];
+  const bet = Math.round(pot * size);
+  const call = bet;
+  const required = requiredRate(pot, bet, call);
+  let winPct = null;
+  if (mode === "cf") {
+    winPct = Math.round(required + (Math.random() * 24 - 12));
+    winPct = Math.max(5, Math.min(95, winPct));
+  }
+  spot = { pot, bet, call, required, winPct };
+  answered = false;
+  render();
+}
+
+function render() {
+  $("pot").textContent = spot.pot;
+  $("bet").textContent = spot.bet;
+  $("call").textContent = spot.call;
+  $("feedback").className = "feedback";
+  $("feedback").innerHTML = "";
+  $("next-hint").textContent = "";
+
+  const choices = $("choices");
+  choices.innerHTML = "";
+
+  if (mode === "rate") {
+    $("winrate-box").style.display = "none";
+    $("question").textContent = "必要勝率はどれ?";
+    choices.className = "choices";
+    RATE_CHOICES.forEach(r => {
+      const b = document.createElement("button");
+      b.textContent = r + "%";
+      b.onclick = () => answerRate(r);
+      choices.appendChild(b);
+    });
+  } else {
+    $("winrate-box").style.display = "block";
+    $("winrate").textContent = spot.winPct;
+    $("question").textContent = "コールすべき?";
+    choices.className = "choices two";
+    const c = document.createElement("button");
+    c.textContent = "CALL";
+    c.className = "call";
+    c.onclick = () => answerCF(true);
+    const f = document.createElement("button");
+    f.textContent = "FOLD";
+    f.className = "fold";
+    f.onclick = () => answerCF(false);
+    choices.appendChild(c);
+    choices.appendChild(f);
+  }
+}
+
+function updateScore(isCorrect) {
+  total += 1;
+  if (isCorrect) {
+    correct += 1;
+    streak += 1;
+    if (streak > best) {
+      best = streak;
+      localStorage.setItem("pokerBestStreak", best);
+    }
+  } else {
+    streak = 0;
+  }
+  $("score").textContent = correct + "/" + total;
+  $("streak").textContent = streak;
+  $("best").textContent = best;
+}
+
+function showFeedback(isCorrect, html) {
+  const fb = $("feedback");
+  fb.className = "feedback " + (isCorrect ? "ok" : "ng");
+  fb.innerHTML = html;
+  $("next-hint").textContent = "タップで次の問題へ";
+  answered = true;
+}
+
+function answerRate(guess) {
+  if (answered) return;
+  const ans = spot.required;
+  const isCorrect = Math.abs(guess - ans) <= 3;
+  updateScore(isCorrect);
+  const mark = isCorrect ? "○ 正解!" : "× ざんねん";
+  showFeedback(isCorrect,
+    `<div class="big">${mark}</div>必要勝率は ${ans.toFixed(1)}%<br>` +
+    `(ベットはポットの${Math.round(spot.bet / spot.pot * 100)}%)`);
+}
+
+function answerCF(calledIt) {
+  if (answered) return;
+  const ev = calcEV(spot.pot, spot.bet, spot.call, spot.winPct);
+  const shouldCall = ev >= 0;
+  const isCorrect = calledIt === shouldCall;
+  updateScore(isCorrect);
+  const mark = isCorrect ? "○ 正解!" : "× ざんねん";
+  const label = shouldCall ? "CALL" : "FOLD";
+  showFeedback(isCorrect,
+    `<div class="big">${mark} 正解は ${label}</div>` +
+    `必要勝率 ${spot.required.toFixed(1)}% / あなたの勝率 ${spot.winPct}%<br>` +
+    `EV ${ev >= 0 ? "+" : ""}${ev.toFixed(1)}`);
+}
+
+// 回答後は画面のどこをタップしても次へ
+document.body.addEventListener("click", () => {
+  if (answered) newSpot();
+});
+
+$("tab-rate").onclick = (e) => {
+  e.stopPropagation();
+  mode = "rate";
+  $("tab-rate").classList.add("active");
+  $("tab-cf").classList.remove("active");
+  newSpot();
+};
+$("tab-cf").onclick = (e) => {
+  e.stopPropagation();
+  mode = "cf";
+  $("tab-cf").classList.add("active");
+  $("tab-rate").classList.remove("active");
+  newSpot();
+};
+
+$("best").textContent = best;
+newSpot();
+</script>
+</body>
+</html>
