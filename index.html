@@ -53,6 +53,24 @@
     color: var(--sub);
   }
   .tabs button.active { background: var(--blue); color: #fff; border-color: var(--blue); }
+  .level-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 10px 14px;
+    margin-bottom: 12px;
+    font-size: 13px;
+    color: var(--sub);
+  }
+  .level-bar .lv { white-space: nowrap; }
+  .level-bar .lv b { color: var(--blue); font-size: 16px; }
+  .meter { flex: 1; height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
+  .meter > div { height: 100%; background: var(--green); width: 0%; transition: width .3s; }
+  .meter-text { white-space: nowrap; }
+  .levelup { color: #ffd24a; font-weight: 700; margin-top: 8px; }
   .spot {
     background: var(--card);
     border: 1px solid var(--border);
@@ -137,6 +155,12 @@
     <button id="tab-outs">勝率(アウツ)</button>
   </div>
 
+  <div class="level-bar">
+    <span class="lv">Lv <b id="level-num">1</b> <span id="level-name">やさしい</span></span>
+    <div class="meter"><div id="meter-fill"></div></div>
+    <span class="meter-text" id="meter-text">習熟度 0/10</span>
+  </div>
+
   <div class="spot">
     <div class="row" id="pot-row">
       <div><div class="label">ポット</div><div class="value" id="pot">-</div></div>
@@ -166,6 +190,27 @@ const BET_SIZES = [0.33, 0.5, 0.66, 0.75, 1.0, 1.5];
 const POTS = [40, 60, 80, 100, 120, 150, 200, 300];
 const RATE_CHOICES = [20, 25, 28.5, 30, 33.3, 37.5];
 
+// レベル設定（モードごとに難易度が段階的に上がる）
+const GOAL = 10; // この習熟度ポイントでレベルアップ
+const LEVELS = {
+  cf: [
+    { name: "やさしい",   gap: [10, 22], sizes: [0.5, 0.66, 1.0] },
+    { name: "ふつう",     gap: [5, 14],  sizes: [0.33, 0.5, 0.66, 0.75, 1.0] },
+    { name: "むずかしい", gap: [2, 8],   sizes: [0.33, 0.5, 0.66, 0.75, 1.0, 1.5] },
+    { name: "実戦",       gap: [1, 12],  sizes: [0.33, 0.5, 0.66, 0.75, 1.0, 1.5] },
+  ],
+  rate: [
+    { name: "やさしい",   sizes: [0.5, 0.66, 1.0] },
+    { name: "ふつう",     sizes: [0.33, 0.5, 0.66, 0.75, 1.0] },
+    { name: "むずかしい", sizes: [0.33, 0.5, 0.66, 0.75, 1.0, 1.5] },
+  ],
+  outs: [
+    { name: "やさしい",   pool: ["フラッシュドロー", "オープンエンド", "ガットショット"] },
+    { name: "ふつう",     pool: ["フラッシュドロー", "オープンエンド", "ガットショット", "オーバーカード2枚", "ポケットペア（セット狙い)"] },
+    { name: "むずかしい", pool: null }, // 全シナリオ
+  ],
+};
+
 // アウツクイズの局面集（turn はアウツを変えないブリックカード）
 const OUTS_SET = [2, 4, 6, 8, 9, 12, 15];
 const SCENARIOS = [
@@ -192,8 +237,17 @@ let spot = null;
 let answered = false;
 let correct = 0, total = 0, streak = 0;
 let best = Number(localStorage.getItem("pokerBestStreak") || 0);
+let level = {}, mastery = {};  // モードごとの現在レベル(0始まり)と習熟度ポイント
+let lastLevelUp = false;
 
 const $ = id => document.getElementById(id);
+
+function loadProgress(m) {
+  level[m] = Number(localStorage.getItem("pokerLevel_" + m) || 0);
+  mastery[m] = Number(localStorage.getItem("pokerMastery_" + m) || 0);
+  const max = LEVELS[m].length - 1;
+  if (level[m] > max) level[m] = max;
+}
 
 function requiredRate(pot, bet, call) {
   return call / (pot + bet + call) * 100;
@@ -208,19 +262,28 @@ function pick(arr) {
 
 function newSpot() {
   answered = false;
+  const lv = level[mode];
   if (mode === "outs") {
-    spot = { sc: pick(SCENARIOS), street: pick(["flop", "turn"]), stage: 1 };
-  } else {
+    const pool = LEVELS.outs[lv].pool;
+    const scs = pool ? SCENARIOS.filter(s => pool.includes(s.name)) : SCENARIOS;
+    spot = { sc: pick(scs), street: pick(["flop", "turn"]), stage: 1 };
+  } else if (mode === "rate") {
     const pot = pick(POTS);
-    const size = pick(BET_SIZES);
+    const size = pick(LEVELS.rate[lv].sizes);
+    const bet = Math.round(pot * size);
+    const call = bet;
+    spot = { pot, bet, call, required: requiredRate(pot, bet, call), winPct: null };
+  } else { // cf
+    const cfg = LEVELS.cf[lv];
+    const pot = pick(POTS);
+    const size = pick(cfg.sizes);
     const bet = Math.round(pot * size);
     const call = bet;
     const required = requiredRate(pot, bet, call);
-    let winPct = null;
-    if (mode === "cf") {
-      winPct = Math.round(required + (Math.random() * 24 - 12));
-      winPct = Math.max(5, Math.min(95, winPct));
-    }
+    const gap = cfg.gap[0] + Math.random() * (cfg.gap[1] - cfg.gap[0]);
+    const sign = Math.random() < 0.5 ? -1 : 1;
+    let winPct = Math.round(required + sign * gap);
+    winPct = Math.max(5, Math.min(95, winPct));
     spot = { pot, bet, call, required, winPct };
   }
   render();
@@ -291,6 +354,7 @@ function render() {
       rateOptions().forEach(r => choices.appendChild(makeButton("約" + r + "%", () => answerOutsRate(r))));
     }
   }
+  renderLevelBar();
 }
 
 function rateOptions() {
@@ -312,15 +376,52 @@ function updateScore(isCorrect) {
   } else {
     streak = 0;
   }
+  lastLevelUp = bumpMastery(isCorrect);
   $("score").textContent = correct + "/" + total;
   $("streak").textContent = streak;
   $("best").textContent = best;
+  renderLevelBar();
+}
+
+function bumpMastery(isCorrect) {
+  const maxLv = LEVELS[mode].length - 1;
+  if (level[mode] >= maxLv) return false; // 最高レベルは据え置き
+  mastery[mode] += isCorrect ? 1 : -1;
+  if (mastery[mode] < 0) mastery[mode] = 0;
+  let leveledUp = false;
+  if (mastery[mode] >= GOAL) {
+    level[mode] += 1;
+    mastery[mode] = 0;
+    leveledUp = true;
+    localStorage.setItem("pokerLevel_" + mode, level[mode]);
+  }
+  localStorage.setItem("pokerMastery_" + mode, mastery[mode]);
+  return leveledUp;
+}
+
+function renderLevelBar() {
+  const cfg = LEVELS[mode];
+  const lv = level[mode];
+  $("level-num").textContent = lv + 1;
+  $("level-name").textContent = cfg[lv].name;
+  if (lv >= cfg.length - 1) {
+    $("meter-fill").style.width = "100%";
+    $("meter-text").textContent = "最高レベル";
+  } else {
+    $("meter-fill").style.width = Math.round(mastery[mode] / GOAL * 100) + "%";
+    $("meter-text").textContent = "習熟度 " + mastery[mode] + "/" + GOAL;
+  }
 }
 
 function showFeedback(isCorrect, html, hint) {
   const fb = $("feedback");
   fb.className = "feedback " + (isCorrect ? "ok" : "ng");
-  fb.innerHTML = html;
+  let extra = "";
+  if (lastLevelUp) {
+    const lv = level[mode];
+    extra = `<div class="levelup">🎉 レベルアップ！Lv${lv + 1}「${LEVELS[mode][lv].name}」へ</div>`;
+  }
+  fb.innerHTML = html + extra;
   $("next-hint").textContent = hint || "タップで次の問題へ";
   answered = true;
 }
@@ -328,11 +429,13 @@ function showFeedback(isCorrect, html, hint) {
 function answerRate(guess) {
   if (answered) return;
   const ans = spot.required;
-  const isCorrect = Math.abs(guess - ans) <= 3;
+  // 選択肢のうち真の必要勝率に最も近いものが正解（一意に決まる）
+  const closest = RATE_CHOICES.reduce((a, b) => Math.abs(b - ans) < Math.abs(a - ans) ? b : a);
+  const isCorrect = guess === closest;
   updateScore(isCorrect);
   const mark = isCorrect ? "○ 正解!" : "× ざんねん";
   showFeedback(isCorrect,
-    `<div class="big">${mark}</div>必要勝率は ${ans.toFixed(1)}%<br>` +
+    `<div class="big">${mark} 正解は ${closest}%</div>必要勝率は ${ans.toFixed(1)}%<br>` +
     `(ベットはポットの${Math.round(spot.bet / spot.pot * 100)}%)`);
 }
 
@@ -401,8 +504,9 @@ $("tab-rate").onclick = () => setMode("rate");
 $("tab-cf").onclick = () => setMode("cf");
 $("tab-outs").onclick = () => setMode("outs");
 
+["cf", "rate", "outs"].forEach(loadProgress);
 $("best").textContent = best;
-newSpot();
+setMode("rate");
 </script>
 </body>
 </html>
